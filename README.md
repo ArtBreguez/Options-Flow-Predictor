@@ -113,3 +113,39 @@ The model aims to achieve:
 - Flags high-risk periods for reduced position sizing
 
 The Options Flow Predictor transforms complex institutional trading patterns into actionable investment signals, providing retail and institutional traders with insights typically available only to market makers and sophisticated hedge funds.
+
+## MVP Live Grátis (Polling)
+
+Este repositório inclui o script `live_options_polling.py` para rodar um monitoramento *near-real-time* com custo zero inicial:
+
+- Yahoo/yfinance para preço + cadeia de opções
+- VIX e VIX9D para contexto de volatilidade
+- Recalcula sinais a cada 5 minutos (`--poll-seconds 300`)
+- Apenas imprime sinais no terminal (sem webhook/email)
+
+### Executar
+
+```bash
+python live_options_polling.py --symbols SPY,QQQ,IWM --poll-seconds 300
+```
+
+Rodar um único ciclo (teste):
+
+```bash
+python live_options_polling.py --symbols SPY,QQQ,IWM --once
+```
+
+Validar dependências e coleta (self-check):
+
+```bash
+python live_options_polling.py --symbols SPY,QQQ,IWM --self-check
+```
+
+> Observação: o script usa dados gratuitos e polling, então não substitui feed profissional tick-by-tick.
+
+### Fidelidade em relação ao notebook
+
+Este script é **parcialmente fiel** ao notebook:
+- **Fiel** nas regras de sinal de fluxo de opções: `pcr_volume` (bullish < 0.7, bearish > 1.0) e `uoa_ratio > 1.25` para volume incomum.
+- **Não fiel** à parte de ML/ensemble e engenharia completa de features do notebook (Random Forest, XGBoost, treino, target de 1/3/5 dias, etc.).
+- **Não fiel** ao bloco de interpretação/risk completo; aqui o foco é monitoramento simples em tempo quase real por polling.
