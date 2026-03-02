@@ -368,10 +368,16 @@ def main() -> int:
 
     print("Saved model:", args.out)
     print("Training period:", args.period)
-    print("Train timeframe:", args.train_timeframe)
-    print("Target bars:", args.target_bars)
+    print("Train timeframe:", bundle.get("train_timeframe", args.train_timeframe))
+    print("Target bars:", bundle.get("target_bars", args.target_bars))
     print("Rows:", bundle["n_rows"])
     print(json.dumps(bundle["metrics_summary"], indent=2))
+    m = bundle.get("metrics_summary", {})
+    if "rf_r2" in m and "baseline_mean_r2" in m:
+        edge = float(m["rf_r2"]) - float(m["baseline_mean_r2"])
+        print(f"Edge vs baseline_mean_r2: {edge:.6f}")
+        if edge <= 0:
+            print("[warning] Model is not beating baseline_mean in this config.")
     if not args.notebook_mode:
         print("Notebook-style baseline metrics:")
         print(json.dumps(bundle["notebook_baseline_metrics"], indent=2))
