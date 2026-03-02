@@ -157,14 +157,19 @@ Para sair do modo puramente rule-based e aproximar do notebook:
 1. Treine e salve um modelo com features históricas (agora com `--period max`):
 
 ```bash
-python train_live_model.py --symbols SPY,QQQ,IWM --period max --out artifacts/live_model.pkl
+python train_live_model.py --symbols SPY,QQQ,IWM --period max --cv-splits 5 --out artifacts/live_model.pkl
 ```
 
 2. Rode inferência live combinando ML + fluxo de opções em timeframe de 1 minuto:
 
 ```bash
-python live_ml_signals.py --model artifacts/live_model.pkl --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 1m
+python live_ml_signals.py --model artifacts/live_model.pkl --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 1m --print-all
 ```
+
+Treino robusto agora:
+- Walk-forward com `TimeSeriesSplit` em múltiplos folds (`--cv-splits`)
+- Métricas por fold e resumo (média/desvio) para RF, XGBoost e Ensemble
+- Features ampliadas para aproximar do notebook (RSI, MACD, BB, VIX, VIX term structure, sinais de fluxo)
 
 Regra de ação no script live:
 - `LONG`: ML bullish **alinhado** com `pcr_signal=bullish` e magnitude mínima
