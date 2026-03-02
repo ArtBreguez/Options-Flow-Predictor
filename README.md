@@ -157,7 +157,7 @@ Para sair do modo puramente rule-based e aproximar do notebook:
 1. Treine e salve um modelo com features históricas (agora com `--period max`):
 
 ```bash
-python train_live_model.py --symbols SPY,QQQ,IWM --period max --cv-splits 5 --notebook-mode --out artifacts/live_model.pkl
+python train_live_model.py --symbols SPY,QQQ,IWM --period max --train-timeframe 5m --target-bars 1 --cv-splits 5 --notebook-mode --out artifacts/live_model.pkl
 ```
 
 2. Rode inferência live combinando ML + fluxo de opções em timeframe de 1 minuto:

@@ -6,17 +6,27 @@ import json
 import pickle
 from pathlib import Path
 
-from feature_pipeline import FEATURE_COLS, bollinger_position, macd_series, options_snapshot_features, rsi_series, temporal_options_features, vix_context
+from feature_pipeline import (
+    FEATURE_COLS,
+    bollinger_position,
+    macd_series,
+    options_snapshot_features,
+    rsi_series,
+    temporal_options_features,
+    vix_context,
+)
 
 
 def _load_yfinance():
     import yfinance as yf  # type: ignore
+
     return yf
 
 
 def _maybe_xgb():
     try:
         import xgboost as xgb  # type: ignore
+
         return xgb
     except Exception:
         return None
@@ -28,14 +38,27 @@ def _load_core_ml():
     from sklearn.ensemble import RandomForestRegressor  # type: ignore
     from sklearn.metrics import mean_squared_error, r2_score  # type: ignore
     from sklearn.model_selection import TimeSeriesSplit  # type: ignore
+
     return np, pd, RandomForestRegressor, r2_score, mean_squared_error, TimeSeriesSplit
 
 
-def fetch_symbol_frame(symbol: str, period: str = "max"):
+def _period_for_interval(period: str, interval: str) -> str:
+    if interval == "1m":
+        return "7d"
+    if interval in {"2m", "5m", "15m", "30m"}:
+        return "60d" if period == "max" else period
+    if interval in {"60m", "90m", "1h"}:
+        return "730d" if period == "max" else period
+    return period
+
+
+def fetch_symbol_frame(symbol: str, period: str = "max", train_timeframe: str = "5m", target_bars: int = 1):
     np, pd, _, _, _, _ = _load_core_ml()
     yf = _load_yfinance()
+
     t = yf.Ticker(symbol)
-    px = t.history(period=period)
+    yf_period = _period_for_interval(period, train_timeframe)
+    px = t.history(period=yf_period, interval=train_timeframe)
     if px.empty:
         return pd.DataFrame()
 
@@ -55,22 +78,23 @@ def fetch_symbol_frame(symbol: str, period: str = "max"):
     df["ma_20"] = px["Close"].rolling(20).mean().fillna(px["Close"])
     df["vol_20"] = ret.rolling(20).std().fillna(0)
 
-    vix = vix_context(yf, period)
+    # VIX stays daily; forward-filled onto intraday index
+    vix = vix_context(yf, period="1y")
     df = df.join(vix.reindex(df.index).ffill().fillna(0), how="left")
 
     opt = options_snapshot_features(t, float(px["Close"].iloc[-1]))
     opt_ts = temporal_options_features(px, opt)
     df = df.join(opt_ts, how="left")
 
-    df["target_1d"] = df["close_price"].pct_change().shift(-1)
+    df["target_return"] = df["close_price"].pct_change(target_bars).shift(-target_bars)
     return df.reset_index(names="date")
 
 
-def prepare_dataset(symbols: list[str], period: str):
+def prepare_dataset(symbols: list[str], period: str, train_timeframe: str, target_bars: int):
     np, pd, _, _, _, _ = _load_core_ml()
-    frames = [fetch_symbol_frame(s, period=period) for s in symbols]
+    frames = [fetch_symbol_frame(s, period=period, train_timeframe=train_timeframe, target_bars=target_bars) for s in symbols]
     df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
-    df = df.dropna(subset=["target_1d"]).copy()
+    df = df.dropna(subset=["target_return"]).copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
     return df.sort_values(["date", "symbol"]).reset_index(drop=True)
 
@@ -120,6 +144,7 @@ def evaluate_walk_forward(X, y, n_splits: int, use_xgb: bool):
 
 def summarize_metrics(folds):
     import numpy as np  # type: ignore
+
     keys = sorted({k for f in folds for k in f.keys() if k != "fold"})
     out = {}
     for k in keys:
@@ -129,13 +154,9 @@ def summarize_metrics(folds):
     return out
 
 
-
-
 def notebook_style_split(X, y):
-    """Replicate notebook split behavior: TimeSeriesSplit(n_splits=3), first split only."""
     _, _, _, _, _, TimeSeriesSplit = _load_core_ml()
-    tscv = TimeSeriesSplit(n_splits=3)
-    tr, te = next(tscv.split(X))
+    tr, te = next(TimeSeriesSplit(n_splits=3).split(X))
     return X.iloc[tr], X.iloc[te], y.iloc[tr], y.iloc[te]
 
 
@@ -143,10 +164,7 @@ def compute_baselines(y_train, y_test):
     import numpy as np  # type: ignore
     from sklearn.metrics import mean_squared_error, r2_score  # type: ignore
 
-    # baseline 1: always zero return
     pred_zero = np.zeros(len(y_test))
-
-    # baseline 2: train-mean return
     mu = float(np.mean(y_train))
     pred_mean = np.full(len(y_test), mu)
 
@@ -159,17 +177,15 @@ def compute_baselines(y_train, y_test):
 
 
 def notebook_baseline_eval(X, y, use_xgb: bool):
-    """Single-split evaluation to mirror notebook training logics."""
     import numpy as np  # type: ignore
+
     _, _, RandomForestRegressor, r2_score, mean_squared_error, _ = _load_core_ml()
     xgb_mod = _maybe_xgb() if use_xgb else None
-
     Xtr, Xte, ytr, yte = notebook_style_split(X, y)
 
     rf = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
     rf.fit(Xtr, ytr)
     rf_pred = rf.predict(Xte)
-
     out = {
         "rf_r2": float(r2_score(yte, rf_pred)),
         "rf_rmse": float(np.sqrt(mean_squared_error(yte, rf_pred))),
@@ -187,15 +203,18 @@ def notebook_baseline_eval(X, y, use_xgb: bool):
         xgb.fit(Xtr, ytr, verbose=False)
         xgb_pred = xgb.predict(Xte)
         ens = (rf_pred + xgb_pred) / 2
-        out.update({
-            "xgb_r2": float(r2_score(yte, xgb_pred)),
-            "xgb_rmse": float(np.sqrt(mean_squared_error(yte, xgb_pred))),
-            "ensemble_r2": float(r2_score(yte, ens)),
-            "ensemble_rmse": float(np.sqrt(mean_squared_error(yte, ens))),
-        })
+        out.update(
+            {
+                "xgb_r2": float(r2_score(yte, xgb_pred)),
+                "xgb_rmse": float(np.sqrt(mean_squared_error(yte, xgb_pred))),
+                "ensemble_r2": float(r2_score(yte, ens)),
+                "ensemble_rmse": float(np.sqrt(mean_squared_error(yte, ens))),
+            }
+        )
 
     out.update(compute_baselines(ytr, yte))
     return out
+
 
 def fit_final_models(X, y, use_xgb: bool):
     _, pd, RandomForestRegressor, _, _, _ = _load_core_ml()
@@ -223,22 +242,18 @@ def fit_final_models(X, y, use_xgb: bool):
 
 def train(df, n_splits: int, use_xgb: bool, notebook_mode: bool):
     X = df[FEATURE_COLS]
-    y = df["target_1d"]
+    y = df["target_return"]
 
     baseline_eval = notebook_baseline_eval(X, y, use_xgb=use_xgb)
-
     folds = evaluate_walk_forward(X, y, n_splits=n_splits, use_xgb=use_xgb)
     summary = summarize_metrics(folds)
     models, fi = fit_final_models(X, y, use_xgb=use_xgb)
 
-    if notebook_mode:
-        metrics_summary = baseline_eval
-    else:
-        metrics_summary = {**baseline_eval, **summary}
-
+    metrics_summary = baseline_eval if notebook_mode else {**baseline_eval, **summary}
     return {
         "models": models,
         "feature_cols": FEATURE_COLS,
+        "target_col": "target_return",
         "fold_metrics": folds,
         "notebook_baseline_metrics": baseline_eval,
         "metrics_summary": metrics_summary,
@@ -252,24 +267,31 @@ def main() -> int:
     ap.add_argument("--symbols", default="SPY,QQQ,IWM")
     ap.add_argument("--out", default="artifacts/live_model.pkl")
     ap.add_argument("--period", default="max")
+    ap.add_argument("--train-timeframe", default="5m", help="yfinance interval for training data (e.g., 5m)")
+    ap.add_argument("--target-bars", type=int, default=1, help="Forward bars for target_return (5m timeframe: 1=+5m)")
     ap.add_argument("--cv-splits", type=int, default=5)
     ap.add_argument("--disable-xgb", action="store_true")
     ap.add_argument("--notebook-mode", action="store_true", help="Report primary metrics using notebook-style first split")
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    df = prepare_dataset(symbols, period=args.period)
+    df = prepare_dataset(symbols, period=args.period, train_timeframe=args.train_timeframe, target_bars=args.target_bars)
     if df.empty:
         print("No training data.")
         return 1
 
     bundle = train(df, n_splits=args.cv_splits, use_xgb=not args.disable_xgb, notebook_mode=args.notebook_mode)
+    bundle["train_timeframe"] = args.train_timeframe
+    bundle["target_bars"] = args.target_bars
+
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "wb") as f:
         pickle.dump(bundle, f)
 
     print("Saved model:", args.out)
     print("Training period:", args.period)
+    print("Train timeframe:", args.train_timeframe)
+    print("Target bars:", args.target_bars)
     print("Rows:", bundle["n_rows"])
     print(json.dumps(bundle["metrics_summary"], indent=2))
     if not args.notebook_mode:

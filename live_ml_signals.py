@@ -116,6 +116,9 @@ def main() -> int:
     rf = bundle["models"]["random_forest"]
     xgb = bundle["models"].get("xgboost")
     model_cols = bundle.get("feature_cols", FEATURE_COLS)
+    model_tf = bundle.get("train_timeframe")
+    if model_tf and model_tf != args.signal_timeframe:
+        print(f"[warning] model trained on timeframe={model_tf}, running live on timeframe={args.signal_timeframe}")
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     last = {}
