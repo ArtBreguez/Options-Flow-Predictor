@@ -163,7 +163,7 @@ python train_live_model.py --symbols SPY,QQQ,IWM --period max --cv-splits 5 --no
 2. Rode inferência live combinando ML + fluxo de opções em timeframe de 1 minuto:
 
 ```bash
-python live_ml_signals.py --model artifacts/live_model.pkl --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 1m --print-all
+python live_ml_signals.py --model artifacts/live_model.pkl --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 1m --entry-mode balanced --print-all
 ```
 
 Treino robusto agora:
@@ -182,3 +182,5 @@ Regra de ação no script live:
 ### Arquitetura de features compartilhadas
 
 Agora o projeto usa `feature_pipeline.py` para manter o mesmo schema de features entre treino e inferência live, reduzindo drift de produção.
+
+As features de opções no treino agora têm variação temporal por data via proxies progressivos (em vez de snapshot fixo por símbolo).

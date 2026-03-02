@@ -6,7 +6,7 @@ import pickle
 import time
 from datetime import datetime
 
-from feature_pipeline import FEATURE_COLS, bollinger_position, macd_series, rsi_series
+from feature_pipeline import FEATURE_COLS, bollinger_position, macd_series, rsi_series, temporal_options_features
 from live_options_polling import fetch_symbol_snapshot, get_vix_metrics, snapshot_signature
 
 
@@ -28,6 +28,18 @@ def build_live_row(symbol: str, snap, signal_timeframe: str = "1m"):
     vix, vix_term = get_vix_metrics()
     vix_val = float(vix) if vix is not None else 20.0
 
+    base_opt = {
+        "pcr_volume": snap.pcr_volume,
+        "pcr_open_interest": snap.pcr_oi,
+        "uoa_ratio": snap.uoa_ratio,
+        "net_gamma_exposure": 0.0,
+        "total_gamma": 0.0,
+        "atm_iv_average": 0.2,
+        "call_put_iv_spread": 0.0,
+    }
+    opt_ts = temporal_options_features(px, base_opt)
+    opt_last = opt_ts.iloc[-1]
+
     row = {
         "close_price": float(close.iloc[-1]),
         "volume": float(px["Volume"].iloc[-1]),
@@ -40,16 +52,15 @@ def build_live_row(symbol: str, snap, signal_timeframe: str = "1m"):
         "ma_10": float(close.rolling(10).mean().iloc[-1]) if len(close) > 10 else float(close.iloc[-1]),
         "ma_20": float(close.rolling(20).mean().iloc[-1]) if len(close) > 20 else float(close.iloc[-1]),
         "vol_20": float(ret.rolling(20).std().iloc[-1]) if len(close) > 20 else 0.0,
-        "pcr_volume": snap.pcr_volume,
-        "pcr_open_interest": snap.pcr_oi,
-        "uoa_ratio": snap.uoa_ratio,
-        "pcr_signal_numeric": 1 if snap.pcr_signal == "bullish" else -1 if snap.pcr_signal == "bearish" else 0,
-        "unusual_volume_signal": 1 if snap.unusual_volume else 0,
-        # live proxy fields not fully reconstructable intraday from free source
-        "net_gamma_exposure": 0.0,
-        "total_gamma": 0.0,
-        "atm_iv_average": 0.2,
-        "call_put_iv_spread": 0.0,
+        "pcr_volume": float(opt_last["pcr_volume"]),
+        "pcr_open_interest": float(opt_last["pcr_open_interest"]),
+        "uoa_ratio": float(opt_last["uoa_ratio"]),
+        "pcr_signal_numeric": int(opt_last["pcr_signal_numeric"]),
+        "unusual_volume_signal": int(opt_last["unusual_volume_signal"]),
+        "net_gamma_exposure": float(opt_last["net_gamma_exposure"]),
+        "total_gamma": float(opt_last["total_gamma"]),
+        "atm_iv_average": float(opt_last["atm_iv_average"]),
+        "call_put_iv_spread": float(opt_last["call_put_iv_spread"]),
         "VIX": vix_val,
         "VIX_Z_Score": 0.0,
         "VIX_Term_Structure": float(vix_term) if vix_term is not None else 0.0,
@@ -58,16 +69,31 @@ def build_live_row(symbol: str, snap, signal_timeframe: str = "1m"):
     return pd.DataFrame([row]).fillna(0)
 
 
-def decide(ml_pred: float, pcr_signal: str, unusual_volume: bool, min_abs_pred: float) -> str:
+def decide(ml_pred: float, pcr_signal: str, unusual_volume: bool, min_abs_pred: float, entry_mode: str = "balanced") -> str:
     ml_signal = "bullish" if ml_pred > 0 else "bearish"
     aligned = ml_signal == pcr_signal
-    if abs(ml_pred) < min_abs_pred:
+
+    if entry_mode == "conservative":
+        thresh = min_abs_pred * 1.5
+    elif entry_mode == "aggressive":
+        thresh = min_abs_pred * 0.7
+    else:
+        thresh = min_abs_pred
+
+    if abs(ml_pred) < thresh:
         return "NO_TRADE"
+
+    if entry_mode == "aggressive":
+        if ml_signal == "bullish":
+            return "LONG"
+        return "SHORT"
+
     if aligned and ml_signal == "bullish":
         return "LONG"
     if aligned and ml_signal == "bearish":
         return "SHORT"
-    if unusual_volume:
+
+    if unusual_volume and entry_mode == "balanced":
         return "NO_TRADE_VOLATILITY"
     return "NO_TRADE"
 
@@ -81,6 +107,7 @@ def main() -> int:
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--min-abs-pred", type=float, default=0.0003)
     ap.add_argument("--print-all", action="store_true")
+    ap.add_argument("--entry-mode", choices=["conservative", "balanced", "aggressive"], default="balanced")
     args = ap.parse_args()
 
     with open(args.model, "rb") as f:
@@ -114,7 +141,7 @@ def main() -> int:
                     xgb_pred = None
                     ml_pred = rf_pred
 
-                action = decide(ml_pred, snap.pcr_signal, snap.unusual_volume, args.min_abs_pred)
+                action = decide(ml_pred, snap.pcr_signal, snap.unusual_volume, args.min_abs_pred, entry_mode=args.entry_mode)
                 current = (sig, action, round(ml_pred, 7))
 
                 if args.print_all or last.get(s) != current:

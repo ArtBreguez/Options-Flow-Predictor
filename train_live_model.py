@@ -6,7 +6,7 @@ import json
 import pickle
 from pathlib import Path
 
-from feature_pipeline import FEATURE_COLS, bollinger_position, macd_series, options_snapshot_features, rsi_series, vix_context
+from feature_pipeline import FEATURE_COLS, bollinger_position, macd_series, options_snapshot_features, rsi_series, temporal_options_features, vix_context
 
 
 def _load_yfinance():
@@ -59,8 +59,8 @@ def fetch_symbol_frame(symbol: str, period: str = "max"):
     df = df.join(vix.reindex(df.index).ffill().fillna(0), how="left")
 
     opt = options_snapshot_features(t, float(px["Close"].iloc[-1]))
-    for k, v in opt.items():
-        df[k] = v
+    opt_ts = temporal_options_features(px, opt)
+    df = df.join(opt_ts, how="left")
 
     df["target_1d"] = df["close_price"].pct_change().shift(-1)
     return df.reset_index(names="date")
