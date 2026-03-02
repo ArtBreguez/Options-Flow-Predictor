@@ -262,6 +262,46 @@ def train(df, n_splits: int, use_xgb: bool, notebook_mode: bool):
     }
 
 
+
+
+def evaluate_config(symbols, period, timeframe, target_bars, cv_splits, use_xgb, notebook_mode):
+    df = prepare_dataset(symbols, period=period, train_timeframe=timeframe, target_bars=target_bars)
+    if df.empty:
+        return None
+    bundle = train(df, n_splits=cv_splits, use_xgb=use_xgb, notebook_mode=notebook_mode)
+    metrics = bundle["notebook_baseline_metrics"] if notebook_mode else bundle["metrics_summary"]
+    score = metrics.get("rf_r2", metrics.get("rf_r2_mean", -1e9))
+    baseline = metrics.get("baseline_mean_r2", -1e9)
+    edge = score - baseline
+    return {
+        "timeframe": timeframe,
+        "target_bars": target_bars,
+        "bundle": bundle,
+        "metrics": metrics,
+        "score": score,
+        "baseline": baseline,
+        "edge": edge,
+    }
+
+
+def search_best_config(symbols, period, timeframes, target_bars_list, cv_splits, use_xgb, notebook_mode):
+    candidates = []
+    for tf in timeframes:
+        for bars in target_bars_list:
+            print(f"[search] evaluating timeframe={tf}, target_bars={bars}")
+            res = evaluate_config(symbols, period, tf, bars, cv_splits, use_xgb, notebook_mode)
+            if res is None:
+                print("[search] skipped (no data)")
+                continue
+            print(f"[search] rf_r2={res['score']:.6f} baseline_mean_r2={res['baseline']:.6f} edge={res['edge']:.6f}")
+            candidates.append(res)
+
+    if not candidates:
+        return None, []
+
+    candidates.sort(key=lambda x: (x["edge"], x["score"]), reverse=True)
+    return candidates[0], candidates
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default="SPY,QQQ,IWM")
@@ -272,17 +312,44 @@ def main() -> int:
     ap.add_argument("--cv-splits", type=int, default=5)
     ap.add_argument("--disable-xgb", action="store_true")
     ap.add_argument("--notebook-mode", action="store_true", help="Report primary metrics using notebook-style first split")
+    ap.add_argument("--search", action="store_true", help="Search best timeframe/target-bars combo against baseline")
+    ap.add_argument("--search-timeframes", default="1m,2m,5m,15m", help="Comma list for --search")
+    ap.add_argument("--search-target-bars", default="1,2,3", help="Comma list for --search")
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    df = prepare_dataset(symbols, period=args.period, train_timeframe=args.train_timeframe, target_bars=args.target_bars)
-    if df.empty:
-        print("No training data.")
-        return 1
 
-    bundle = train(df, n_splits=args.cv_splits, use_xgb=not args.disable_xgb, notebook_mode=args.notebook_mode)
-    bundle["train_timeframe"] = args.train_timeframe
-    bundle["target_bars"] = args.target_bars
+    if args.search:
+        tfs = [x.strip() for x in args.search_timeframes.split(",") if x.strip()]
+        bars_list = [int(x.strip()) for x in args.search_target_bars.split(",") if x.strip()]
+        best, all_candidates = search_best_config(
+            symbols=symbols,
+            period=args.period,
+            timeframes=tfs,
+            target_bars_list=bars_list,
+            cv_splits=args.cv_splits,
+            use_xgb=not args.disable_xgb,
+            notebook_mode=args.notebook_mode,
+        )
+        if best is None:
+            print("No training data for searched configs.")
+            return 1
+        bundle = best["bundle"]
+        bundle["search_results"] = [
+            {"timeframe": c["timeframe"], "target_bars": c["target_bars"], "score": c["score"], "baseline": c["baseline"], "edge": c["edge"]}
+            for c in all_candidates
+        ]
+        bundle["train_timeframe"] = best["timeframe"]
+        bundle["target_bars"] = best["target_bars"]
+        print(f"Selected best config timeframe={best['timeframe']} target_bars={best['target_bars']} edge={best['edge']:.6f}")
+    else:
+        df = prepare_dataset(symbols, period=args.period, train_timeframe=args.train_timeframe, target_bars=args.target_bars)
+        if df.empty:
+            print("No training data.")
+            return 1
+        bundle = train(df, n_splits=args.cv_splits, use_xgb=not args.disable_xgb, notebook_mode=args.notebook_mode)
+        bundle["train_timeframe"] = args.train_timeframe
+        bundle["target_bars"] = args.target_bars
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "wb") as f:

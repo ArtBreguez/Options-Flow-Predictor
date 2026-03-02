@@ -184,3 +184,12 @@ Regra de ação no script live:
 Agora o projeto usa `feature_pipeline.py` para manter o mesmo schema de features entre treino e inferência live, reduzindo drift de produção.
 
 As features de opções no treino agora têm variação temporal por data via proxies progressivos (em vez de snapshot fixo por símbolo).
+
+
+### Busca automática de timeframe/target (contra baseline)
+
+```bash
+python train_live_model.py --symbols SPY,QQQ,IWM --period max --cv-splits 5 --notebook-mode --search --search-timeframes 1m,2m,5m,15m --search-target-bars 1,2,3 --out artifacts/live_model.pkl
+```
+
+Esse modo testa combinações de timeframe e horizonte de alvo e salva o melhor config por `edge = model_r2 - baseline_mean_r2`.
