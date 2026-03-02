@@ -7,7 +7,7 @@ import pickle
 import time
 from datetime import datetime
 
-from feature_pipeline import FEATURE_COLS, bollinger_position, macd_series, rsi_series, temporal_options_features
+from feature_pipeline import FEATURE_COLS, bollinger_position, macd_series, rsi_series, static_options_features_frame
 from live_options_polling import fetch_symbol_snapshot, get_vix_metrics, snapshot_signature
 
 
@@ -38,8 +38,8 @@ def build_live_row(symbol: str, snap, signal_timeframe: str = "1m"):
         "atm_iv_average": 0.2,
         "call_put_iv_spread": 0.0,
     }
-    opt_ts = temporal_options_features(px, base_opt)
-    opt_last = opt_ts.iloc[-1]
+    opt_static = static_options_features_frame(px.index, base_opt)
+    opt_last = opt_static.iloc[-1]
 
     row = {
         "close_price": float(close.iloc[-1]),

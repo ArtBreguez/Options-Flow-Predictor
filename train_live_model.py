@@ -13,7 +13,7 @@ from feature_pipeline import (
     macd_series,
     options_snapshot_features,
     rsi_series,
-    temporal_options_features,
+    static_options_features_frame,
     vix_context,
 )
 
@@ -84,8 +84,8 @@ def fetch_symbol_frame(symbol: str, period: str = "max", train_timeframe: str = 
     df = df.join(vix.reindex(df.index).ffill().fillna(0), how="left")
 
     opt = options_snapshot_features(t, float(px["Close"].iloc[-1]))
-    opt_ts = temporal_options_features(px, opt)
-    df = df.join(opt_ts, how="left")
+    opt_static = static_options_features_frame(df.index, opt)
+    df = df.join(opt_static, how="left")
 
     df["target_return"] = df["close_price"].pct_change(target_bars).shift(-target_bars)
     return df.reset_index(names="date")

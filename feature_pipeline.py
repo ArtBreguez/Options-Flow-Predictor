@@ -170,49 +170,21 @@ def _load_np_pd():
     return np, pd
 
 
-def temporal_options_features(px, base_opt: dict):
-    """Create time-varying options-flow proxies per date.
+def static_options_features_frame(index, base_opt: dict):
+    """Broadcast notebook-style options snapshot features across all rows.
 
-    Yahoo free data does not provide full historical option chains per day,
-    so we derive progressive proxies from price/volume dynamics and blend with
-    a static options snapshot anchor.
+    The notebook computes options-chain features from a snapshot and reuses
+    those values in feature rows. This helper keeps that behavior explicit.
     """
     _, pd = _load_np_pd()
-    close = px["Close"]
-    vol = px["Volume"].replace(0, 1)
-    ret = close.pct_change().fillna(0)
-
-    down_vol = (vol * (ret < 0).astype(int)).rolling(10, min_periods=1).sum()
-    up_vol = (vol * (ret > 0).astype(int)).rolling(10, min_periods=1).sum().replace(0, 1)
-    flow_pcr_proxy = (down_vol / up_vol).clip(0.2, 5.0)
-
-    oi_proxy = vol.rolling(20, min_periods=1).mean().replace(0, 1)
-    uoa_dynamic = (vol / oi_proxy).clip(0, 5.0)
-
-    pcr_base = float(base_opt.get("pcr_volume", 1.0))
-    pcr_oi_base = float(base_opt.get("pcr_open_interest", 1.0))
-    uoa_base = float(base_opt.get("uoa_ratio", 1.0))
-
-    # blend static anchor with dynamic proxy to get per-date variation
-    pcr_volume = (0.5 * pcr_base + 0.5 * flow_pcr_proxy).clip(0.2, 5.0)
-    pcr_oi = (0.7 * pcr_oi_base + 0.3 * flow_pcr_proxy).clip(0.2, 5.0)
-    uoa_ratio = (0.4 * uoa_base + 0.6 * uoa_dynamic).clip(0, 5.0)
-
-    pcr_signal = pcr_volume.apply(lambda x: 1 if x < 0.7 else -1 if x > 1.0 else 0)
-    unusual = (uoa_ratio > 1.25).astype(int)
-
-    # vary dealer/iv proxies with realized vol/moneyness pressure
-    realized_vol = ret.rolling(20, min_periods=1).std().fillna(0)
-    gex_scale = (1 + (realized_vol * 100)).clip(0.5, 3.0)
-
-    out = pd.DataFrame(index=px.index)
-    out["pcr_volume"] = pcr_volume
-    out["pcr_open_interest"] = pcr_oi
-    out["uoa_ratio"] = uoa_ratio
-    out["pcr_signal_numeric"] = pcr_signal
-    out["unusual_volume_signal"] = unusual
-    out["net_gamma_exposure"] = float(base_opt.get("net_gamma_exposure", 0.0)) * gex_scale
-    out["total_gamma"] = float(base_opt.get("total_gamma", 0.0)) * gex_scale
-    out["atm_iv_average"] = float(base_opt.get("atm_iv_average", 0.2)) + realized_vol
-    out["call_put_iv_spread"] = float(base_opt.get("call_put_iv_spread", 0.0)) + (ret.rolling(5, min_periods=1).mean())
+    out = pd.DataFrame(index=index)
+    out["pcr_volume"] = float(base_opt.get("pcr_volume", 1.0))
+    out["pcr_open_interest"] = float(base_opt.get("pcr_open_interest", 1.0))
+    out["uoa_ratio"] = float(base_opt.get("uoa_ratio", 1.0))
+    out["pcr_signal_numeric"] = int(base_opt.get("pcr_signal_numeric", 0))
+    out["unusual_volume_signal"] = int(base_opt.get("unusual_volume_signal", 0))
+    out["net_gamma_exposure"] = float(base_opt.get("net_gamma_exposure", 0.0))
+    out["total_gamma"] = float(base_opt.get("total_gamma", 0.0))
+    out["atm_iv_average"] = float(base_opt.get("atm_iv_average", 0.2))
+    out["call_put_iv_spread"] = float(base_opt.get("call_put_iv_spread", 0.0))
     return out.fillna(0)
