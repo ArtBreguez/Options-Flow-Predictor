@@ -149,3 +149,26 @@ Este script é **parcialmente fiel** ao notebook:
 - **Fiel** nas regras de sinal de fluxo de opções: `pcr_volume` (bullish < 0.7, bearish > 1.0) e `uoa_ratio > 1.25` para volume incomum.
 - **Não fiel** à parte de ML/ensemble e engenharia completa de features do notebook (Random Forest, XGBoost, treino, target de 1/3/5 dias, etc.).
 - **Não fiel** ao bloco de interpretação/risk completo; aqui o foco é monitoramento simples em tempo quase real por polling.
+
+## Sinais de entrada com ML (mais próximo do notebook)
+
+Para sair do modo puramente rule-based e aproximar do notebook:
+
+1. Treine e salve um modelo com features históricas:
+
+```bash
+python train_live_model.py --symbols SPY,QQQ,IWM --out artifacts/live_model.pkl
+```
+
+2. Rode inferência live combinando ML + fluxo de opções:
+
+```bash
+python live_ml_signals.py --model artifacts/live_model.pkl --symbols SPY,QQQ,IWM --poll-seconds 300
+```
+
+Regra de ação no script live:
+- `LONG`: ML bullish **alinhado** com `pcr_signal=bullish` e magnitude mínima
+- `SHORT`: ML bearish **alinhado** com `pcr_signal=bearish` e magnitude mínima
+- `NO_TRADE`: conflito/força fraca
+
+> Nota: isso é uma aproximação operacional do notebook; para fidelidade máxima, migrar toda engenharia de features do notebook para módulo Python reutilizável.
