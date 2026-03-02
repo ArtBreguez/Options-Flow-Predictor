@@ -160,6 +160,7 @@ def compute_baselines(y_train, y_test):
 
 def notebook_baseline_eval(X, y, use_xgb: bool):
     """Single-split evaluation to mirror notebook training logics."""
+    import numpy as np  # type: ignore
     _, _, RandomForestRegressor, r2_score, mean_squared_error, _ = _load_core_ml()
     xgb_mod = _maybe_xgb() if use_xgb else None
 
