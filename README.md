@@ -113,3 +113,95 @@ The model aims to achieve:
 - Flags high-risk periods for reduced position sizing
 
 The Options Flow Predictor transforms complex institutional trading patterns into actionable investment signals, providing retail and institutional traders with insights typically available only to market makers and sophisticated hedge funds.
+
+## MVP Live Grátis (Polling)
+
+Este repositório inclui o script `live_options_polling.py` para rodar um monitoramento *near-real-time* com custo zero inicial:
+
+- Yahoo/yfinance para preço + cadeia de opções
+- VIX e VIX9D para contexto de volatilidade
+- Recalcula sinais a cada 1 minuto (`--poll-seconds 60`)
+- Apenas imprime sinais no terminal (sem webhook/email)
+
+### Executar
+
+```bash
+python live_options_polling.py --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 1m
+```
+
+Rodar um único ciclo (teste):
+
+```bash
+python live_options_polling.py --symbols SPY,QQQ,IWM --once
+```
+
+Validar dependências e coleta (self-check):
+
+```bash
+python live_options_polling.py --symbols SPY,QQQ,IWM --self-check
+```
+
+> Observação: o script usa dados gratuitos e polling, então não substitui feed profissional tick-by-tick.
+
+### Fidelidade em relação ao notebook
+
+Este script é **parcialmente fiel** ao notebook:
+- **Fiel** nas regras de sinal de fluxo de opções: `pcr_volume` (bullish < 0.7, bearish > 1.0) e `uoa_ratio > 1.25` para volume incomum.
+- **Não fiel** à parte de ML/ensemble e engenharia completa de features do notebook (Random Forest, XGBoost, treino, target de 1/3/5 dias, etc.).
+- **Não fiel** ao bloco de interpretação/risk completo; aqui o foco é monitoramento simples em tempo quase real por polling.
+
+## Sinais de entrada com ML (mais próximo do notebook)
+
+Para sair do modo puramente rule-based e aproximar do notebook:
+
+1. Treine e salve um modelo com features históricas (agora com `--period max`):
+
+```bash
+python train_live_model.py --symbols SPY,QQQ,IWM --period max --train-timeframe 5m --target-bars 1 --cv-splits 5 --notebook-mode --out artifacts/live_model.pkl
+```
+
+2. Rode inferência live combinando ML + fluxo de opções em timeframe de 1 minuto:
+
+```bash
+python live_ml_signals.py --model artifacts/live_model.pkl --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 1m --entry-mode balanced --print-all
+```
+
+Treino robusto agora:
+- Walk-forward com `TimeSeriesSplit` em múltiplos folds (`--cv-splits`)
+- Métricas por fold e resumo (média/desvio) para RF, XGBoost e Ensemble
+- Features ampliadas para aproximar do notebook (RSI, MACD, BB, VIX, VIX term structure, sinais de fluxo)
+
+Regra de ação no script live:
+- `LONG`: ML bullish **alinhado** com `pcr_signal=bullish` e magnitude mínima
+- `SHORT`: ML bearish **alinhado** com `pcr_signal=bearish` e magnitude mínima
+- `NO_TRADE`: conflito/força fraca
+
+> Nota: isso é uma aproximação operacional do notebook; para fidelidade máxima, migrar toda engenharia de features do notebook para módulo Python reutilizável.
+
+
+### Arquitetura de features compartilhadas
+
+Agora o projeto usa `feature_pipeline.py` para manter o mesmo schema de features entre treino e inferência live, reduzindo drift de produção.
+
+As features de opções no treino agora têm variação temporal por data via proxies progressivos (em vez de snapshot fixo por símbolo).
+
+
+### Busca automática de timeframe/target (contra baseline)
+
+```bash
+python train_live_model.py --symbols SPY,QQQ,IWM --period max --cv-splits 5 --notebook-mode --search --search-timeframes 1m,2m,5m,15m --search-target-bars 1,2,3 --n-estimators 120 --max-depth 8 --out artifacts/live_model.pkl.gz
+```
+
+Esse modo testa combinações de timeframe e horizonte de alvo e salva o melhor config por `edge = model_r2 - baseline_mean_r2`.
+
+
+### Otimização de espaço (No space left on device)
+
+- Use saída comprimida: `--out artifacts/live_model.pkl.gz`
+- Reduza tamanho do modelo: `--n-estimators 80 --max-depth 6`
+- Limpe artefatos antigos: apague modelos `.pkl`/.`pkl.gz` antigos na pasta `artifacts/`
+- Para inferência com artefato comprimido:
+
+```bash
+python live_ml_signals.py --model artifacts/live_model.pkl.gz --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 5m --entry-mode balanced --print-all
+```
