@@ -177,3 +177,8 @@ Regra de ação no script live:
 - `NO_TRADE`: conflito/força fraca
 
 > Nota: isso é uma aproximação operacional do notebook; para fidelidade máxima, migrar toda engenharia de features do notebook para módulo Python reutilizável.
+
+
+### Arquitetura de features compartilhadas
+
+Agora o projeto usa `feature_pipeline.py` para manter o mesmo schema de features entre treino e inferência live, reduzindo drift de produção.

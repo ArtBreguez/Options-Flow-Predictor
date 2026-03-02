@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Live inference using trained model artifacts + notebook-like gating."""
-
 from __future__ import annotations
 
 import argparse
@@ -8,31 +6,13 @@ import pickle
 import time
 from datetime import datetime
 
+from feature_pipeline import FEATURE_COLS, bollinger_position, macd_series, rsi_series
 from live_options_polling import fetch_symbol_snapshot, get_vix_metrics, snapshot_signature
 
 
 def _load_yfinance():
     import yfinance as yf  # type: ignore
-
     return yf
-
-
-def _rsi(close, window: int = 14):
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(window).mean()
-    loss = (-delta.clip(upper=0)).rolling(window).mean().replace(0, 1e-9)
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-
-def _macd(close):
-    return close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
-
-
-def _bb_position(close, window: int = 20):
-    ma = close.rolling(window).mean()
-    std = close.rolling(window).std().replace(0, 1e-9)
-    return (close - ma) / (2 * std)
 
 
 def build_live_row(symbol: str, snap, signal_timeframe: str = "1m"):
@@ -53,9 +33,9 @@ def build_live_row(symbol: str, snap, signal_timeframe: str = "1m"):
         "volume": float(px["Volume"].iloc[-1]),
         "return_1d": float(ret.iloc[-1]),
         "return_5d": float(close.pct_change(5).iloc[-1]) if len(close) > 5 else 0.0,
-        "rsi": float(_rsi(close).iloc[-1]) if len(close) > 14 else 50.0,
-        "macd": float(_macd(close).iloc[-1]),
-        "bb_position": float(_bb_position(close).iloc[-1]) if len(close) > 20 else 0.0,
+        "rsi": float(rsi_series(close).iloc[-1]) if len(close) > 14 else 50.0,
+        "macd": float(macd_series(close).iloc[-1]),
+        "bb_position": float(bollinger_position(close).iloc[-1]) if len(close) > 20 else 0.0,
         "volatility_forecast": float(ret.rolling(30).std().iloc[-1]) if len(close) > 30 else float(ret.std() or 0.0),
         "ma_10": float(close.rolling(10).mean().iloc[-1]) if len(close) > 10 else float(close.iloc[-1]),
         "ma_20": float(close.rolling(20).mean().iloc[-1]) if len(close) > 20 else float(close.iloc[-1]),
@@ -65,11 +45,16 @@ def build_live_row(symbol: str, snap, signal_timeframe: str = "1m"):
         "uoa_ratio": snap.uoa_ratio,
         "pcr_signal_numeric": 1 if snap.pcr_signal == "bullish" else -1 if snap.pcr_signal == "bearish" else 0,
         "unusual_volume_signal": 1 if snap.unusual_volume else 0,
+        # live proxy fields not fully reconstructable intraday from free source
+        "net_gamma_exposure": 0.0,
+        "total_gamma": 0.0,
+        "atm_iv_average": 0.2,
+        "call_put_iv_spread": 0.0,
         "VIX": vix_val,
         "VIX_Z_Score": 0.0,
         "VIX_Term_Structure": float(vix_term) if vix_term is not None else 0.0,
+        "vix_regime": 1 if vix_val < 15 else -1 if vix_val > 25 else 0,
     }
-
     return pd.DataFrame([row]).fillna(0)
 
 
@@ -92,10 +77,10 @@ def main() -> int:
     ap.add_argument("--model", default="artifacts/live_model.pkl")
     ap.add_argument("--symbols", default="SPY,QQQ,IWM")
     ap.add_argument("--poll-seconds", type=int, default=60)
-    ap.add_argument("--signal-timeframe", default="1m", help="Price timeframe for live features (default: 1m)")
+    ap.add_argument("--signal-timeframe", default="1m")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--min-abs-pred", type=float, default=0.0003)
-    ap.add_argument("--print-all", action="store_true", help="Print every polling cycle, not only when state changes")
+    ap.add_argument("--print-all", action="store_true")
     args = ap.parse_args()
 
     with open(args.model, "rb") as f:
@@ -103,7 +88,7 @@ def main() -> int:
 
     rf = bundle["models"]["random_forest"]
     xgb = bundle["models"].get("xgboost")
-    feature_cols = bundle["feature_cols"]
+    model_cols = bundle.get("feature_cols", FEATURE_COLS)
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     last = {}
@@ -118,7 +103,8 @@ def main() -> int:
                     continue
 
                 sig = snapshot_signature(snap)
-                x = build_live_row(s, snap, signal_timeframe=args.signal_timeframe)[feature_cols]
+                x = build_live_row(s, snap, signal_timeframe=args.signal_timeframe)
+                x = x.reindex(columns=model_cols, fill_value=0)
 
                 rf_pred = float(rf.predict(x)[0])
                 if xgb is not None:
