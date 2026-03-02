@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import pickle
 import time
 from datetime import datetime
@@ -110,8 +111,12 @@ def main() -> int:
     ap.add_argument("--entry-mode", choices=["conservative", "balanced", "aggressive"], default="balanced")
     args = ap.parse_args()
 
-    with open(args.model, "rb") as f:
-        bundle = pickle.load(f)
+    if args.model.endswith(".gz"):
+        with gzip.open(args.model, "rb") as f:
+            bundle = pickle.load(f)
+    else:
+        with open(args.model, "rb") as f:
+            bundle = pickle.load(f)
 
     rf = bundle["models"]["random_forest"]
     xgb = bundle["models"].get("xgboost")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import pickle
 from pathlib import Path
@@ -99,7 +100,7 @@ def prepare_dataset(symbols: list[str], period: str, train_timeframe: str, targe
     return df.sort_values(["date", "symbol"]).reset_index(drop=True)
 
 
-def evaluate_walk_forward(X, y, n_splits: int, use_xgb: bool):
+def evaluate_walk_forward(X, y, n_splits: int, use_xgb: bool, n_estimators: int, max_depth: int | None):
     np, _, RandomForestRegressor, r2_score, mean_squared_error, TimeSeriesSplit = _load_core_ml()
     xgb_mod = _maybe_xgb() if use_xgb else None
     tscv = TimeSeriesSplit(n_splits=n_splits)
@@ -109,7 +110,7 @@ def evaluate_walk_forward(X, y, n_splits: int, use_xgb: bool):
         Xtr, Xte = X.iloc[tr], X.iloc[te]
         ytr, yte = y.iloc[tr], y.iloc[te]
 
-        rf = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
+        rf = RandomForestRegressor(n_estimators=n_estimators, max_depth=max_depth, random_state=42, n_jobs=-1)
         rf.fit(Xtr, ytr)
         rf_pred = rf.predict(Xte)
         row = {
@@ -120,7 +121,7 @@ def evaluate_walk_forward(X, y, n_splits: int, use_xgb: bool):
 
         if xgb_mod is not None:
             xgb = xgb_mod.XGBRegressor(
-                n_estimators=300,
+                n_estimators=n_estimators,
                 learning_rate=0.05,
                 max_depth=4,
                 subsample=0.9,
@@ -176,14 +177,14 @@ def compute_baselines(y_train, y_test):
     }
 
 
-def notebook_baseline_eval(X, y, use_xgb: bool):
+def notebook_baseline_eval(X, y, use_xgb: bool, n_estimators: int, max_depth: int | None):
     import numpy as np  # type: ignore
 
     _, _, RandomForestRegressor, r2_score, mean_squared_error, _ = _load_core_ml()
     xgb_mod = _maybe_xgb() if use_xgb else None
     Xtr, Xte, ytr, yte = notebook_style_split(X, y)
 
-    rf = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
+    rf = RandomForestRegressor(n_estimators=n_estimators, max_depth=max_depth, random_state=42, n_jobs=-1)
     rf.fit(Xtr, ytr)
     rf_pred = rf.predict(Xte)
     out = {
@@ -193,7 +194,7 @@ def notebook_baseline_eval(X, y, use_xgb: bool):
 
     if xgb_mod is not None:
         xgb = xgb_mod.XGBRegressor(
-            n_estimators=300,
+            n_estimators=n_estimators,
             learning_rate=0.05,
             max_depth=4,
             subsample=0.9,
@@ -216,17 +217,17 @@ def notebook_baseline_eval(X, y, use_xgb: bool):
     return out
 
 
-def fit_final_models(X, y, use_xgb: bool):
+def fit_final_models(X, y, use_xgb: bool, n_estimators: int, max_depth: int | None):
     _, pd, RandomForestRegressor, _, _, _ = _load_core_ml()
     xgb_mod = _maybe_xgb() if use_xgb else None
 
-    rf = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
+    rf = RandomForestRegressor(n_estimators=n_estimators, max_depth=max_depth, random_state=42, n_jobs=-1)
     rf.fit(X, y)
     models = {"random_forest": rf}
 
     if xgb_mod is not None:
         xgb = xgb_mod.XGBRegressor(
-            n_estimators=300,
+            n_estimators=n_estimators,
             learning_rate=0.05,
             max_depth=4,
             subsample=0.9,
@@ -240,14 +241,14 @@ def fit_final_models(X, y, use_xgb: bool):
     return models, fi.head(20).to_dict()
 
 
-def train(df, n_splits: int, use_xgb: bool, notebook_mode: bool):
+def train(df, n_splits: int, use_xgb: bool, notebook_mode: bool, n_estimators: int, max_depth: int | None, save_models: bool = True):
     X = df[FEATURE_COLS]
     y = df["target_return"]
 
-    baseline_eval = notebook_baseline_eval(X, y, use_xgb=use_xgb)
-    folds = evaluate_walk_forward(X, y, n_splits=n_splits, use_xgb=use_xgb)
+    baseline_eval = notebook_baseline_eval(X, y, use_xgb=use_xgb, n_estimators=n_estimators, max_depth=max_depth)
+    folds = evaluate_walk_forward(X, y, n_splits=n_splits, use_xgb=use_xgb, n_estimators=n_estimators, max_depth=max_depth)
     summary = summarize_metrics(folds)
-    models, fi = fit_final_models(X, y, use_xgb=use_xgb)
+    models, fi = fit_final_models(X, y, use_xgb=use_xgb, n_estimators=n_estimators, max_depth=max_depth) if save_models else ({}, {})
 
     metrics_summary = baseline_eval if notebook_mode else {**baseline_eval, **summary}
     return {
@@ -264,11 +265,11 @@ def train(df, n_splits: int, use_xgb: bool, notebook_mode: bool):
 
 
 
-def evaluate_config(symbols, period, timeframe, target_bars, cv_splits, use_xgb, notebook_mode):
+def evaluate_config(symbols, period, timeframe, target_bars, cv_splits, use_xgb, notebook_mode, n_estimators, max_depth):
     df = prepare_dataset(symbols, period=period, train_timeframe=timeframe, target_bars=target_bars)
     if df.empty:
         return None
-    bundle = train(df, n_splits=cv_splits, use_xgb=use_xgb, notebook_mode=notebook_mode)
+    bundle = train(df, n_splits=cv_splits, use_xgb=use_xgb, notebook_mode=notebook_mode, n_estimators=n_estimators, max_depth=max_depth, save_models=False)
     metrics = bundle["notebook_baseline_metrics"] if notebook_mode else bundle["metrics_summary"]
     score = metrics.get("rf_r2", metrics.get("rf_r2_mean", -1e9))
     baseline = metrics.get("baseline_mean_r2", -1e9)
@@ -284,12 +285,12 @@ def evaluate_config(symbols, period, timeframe, target_bars, cv_splits, use_xgb,
     }
 
 
-def search_best_config(symbols, period, timeframes, target_bars_list, cv_splits, use_xgb, notebook_mode):
+def search_best_config(symbols, period, timeframes, target_bars_list, cv_splits, use_xgb, notebook_mode, n_estimators, max_depth):
     candidates = []
     for tf in timeframes:
         for bars in target_bars_list:
             print(f"[search] evaluating timeframe={tf}, target_bars={bars}")
-            res = evaluate_config(symbols, period, tf, bars, cv_splits, use_xgb, notebook_mode)
+            res = evaluate_config(symbols, period, tf, bars, cv_splits, use_xgb, notebook_mode, n_estimators, max_depth)
             if res is None:
                 print("[search] skipped (no data)")
                 continue
@@ -312,6 +313,8 @@ def main() -> int:
     ap.add_argument("--cv-splits", type=int, default=5)
     ap.add_argument("--disable-xgb", action="store_true")
     ap.add_argument("--notebook-mode", action="store_true", help="Report primary metrics using notebook-style first split")
+    ap.add_argument("--n-estimators", type=int, default=120, help="Tree count (smaller = lighter model artifact)")
+    ap.add_argument("--max-depth", type=int, default=8, help="Max tree depth (smaller = lighter artifact)")
     ap.add_argument("--search", action="store_true", help="Search best timeframe/target-bars combo against baseline")
     ap.add_argument("--search-timeframes", default="1m,2m,5m,15m", help="Comma list for --search")
     ap.add_argument("--search-target-bars", default="1,2,3", help="Comma list for --search")
@@ -330,11 +333,15 @@ def main() -> int:
             cv_splits=args.cv_splits,
             use_xgb=not args.disable_xgb,
             notebook_mode=args.notebook_mode,
+            n_estimators=args.n_estimators,
+            max_depth=args.max_depth,
         )
         if best is None:
             print("No training data for searched configs.")
             return 1
-        bundle = best["bundle"]
+        # retrain best config with models enabled for deployment
+        df_best = prepare_dataset(symbols, period=args.period, train_timeframe=best["timeframe"], target_bars=best["target_bars"])
+        bundle = train(df_best, n_splits=args.cv_splits, use_xgb=not args.disable_xgb, notebook_mode=args.notebook_mode, n_estimators=args.n_estimators, max_depth=args.max_depth, save_models=True)
         bundle["search_results"] = [
             {"timeframe": c["timeframe"], "target_bars": c["target_bars"], "score": c["score"], "baseline": c["baseline"], "edge": c["edge"]}
             for c in all_candidates
@@ -347,13 +354,17 @@ def main() -> int:
         if df.empty:
             print("No training data.")
             return 1
-        bundle = train(df, n_splits=args.cv_splits, use_xgb=not args.disable_xgb, notebook_mode=args.notebook_mode)
+        bundle = train(df, n_splits=args.cv_splits, use_xgb=not args.disable_xgb, notebook_mode=args.notebook_mode, n_estimators=args.n_estimators, max_depth=args.max_depth, save_models=True)
         bundle["train_timeframe"] = args.train_timeframe
         bundle["target_bars"] = args.target_bars
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.out, "wb") as f:
-        pickle.dump(bundle, f)
+    if args.out.endswith(".gz"):
+        with gzip.open(args.out, "wb") as f:
+            pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+    else:
+        with open(args.out, "wb") as f:
+            pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     print("Saved model:", args.out)
     print("Training period:", args.period)

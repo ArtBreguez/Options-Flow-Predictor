@@ -189,7 +189,19 @@ As features de opções no treino agora têm variação temporal por data via pr
 ### Busca automática de timeframe/target (contra baseline)
 
 ```bash
-python train_live_model.py --symbols SPY,QQQ,IWM --period max --cv-splits 5 --notebook-mode --search --search-timeframes 1m,2m,5m,15m --search-target-bars 1,2,3 --out artifacts/live_model.pkl
+python train_live_model.py --symbols SPY,QQQ,IWM --period max --cv-splits 5 --notebook-mode --search --search-timeframes 1m,2m,5m,15m --search-target-bars 1,2,3 --n-estimators 120 --max-depth 8 --out artifacts/live_model.pkl.gz
 ```
 
 Esse modo testa combinações de timeframe e horizonte de alvo e salva o melhor config por `edge = model_r2 - baseline_mean_r2`.
+
+
+### Otimização de espaço (No space left on device)
+
+- Use saída comprimida: `--out artifacts/live_model.pkl.gz`
+- Reduza tamanho do modelo: `--n-estimators 80 --max-depth 6`
+- Limpe artefatos antigos: apague modelos `.pkl`/.`pkl.gz` antigos na pasta `artifacts/`
+- Para inferência com artefato comprimido:
+
+```bash
+python live_ml_signals.py --model artifacts/live_model.pkl.gz --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 5m --entry-mode balanced --print-all
+```
