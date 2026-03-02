@@ -72,10 +72,12 @@ def get_vix_metrics() -> tuple[Optional[float], Optional[float]]:
     return vix_last, vix_last - vix9d_last
 
 
-def fetch_symbol_snapshot(symbol: str, expiries_to_use: int = 3) -> Optional[SignalSnapshot]:
+def fetch_symbol_snapshot(symbol: str, expiries_to_use: int = 3, price_interval: str = "1m") -> Optional[SignalSnapshot]:
     yf = _load_yfinance()
     ticker = yf.Ticker(symbol)
-    px_hist = ticker.history(period="1d")
+    # 1m candles are only available for limited history windows on Yahoo
+    period_for_interval = "7d" if price_interval == "1m" else "1mo"
+    px_hist = ticker.history(period=period_for_interval, interval=price_interval)
     if px_hist.empty:
         return None
 
@@ -156,7 +158,7 @@ def format_snapshot(s: SignalSnapshot) -> str:
     )
 
 
-def run_self_check(symbols: list[str]) -> int:
+def run_self_check(symbols: list[str], signal_timeframe: str) -> int:
     print("Running self-check...")
     try:
         _load_yfinance()
@@ -167,7 +169,7 @@ def run_self_check(symbols: list[str]) -> int:
 
     for symbol in symbols:
         try:
-            snap = fetch_symbol_snapshot(symbol)
+            snap = fetch_symbol_snapshot(symbol, price_interval=signal_timeframe)
             if snap is None:
                 print(f"- {symbol}: FAIL (no data)")
                 return 3
@@ -180,14 +182,14 @@ def run_self_check(symbols: list[str]) -> int:
     return 0
 
 
-def run_loop(symbols: list[str], poll_seconds: int, once: bool = False) -> int:
+def run_loop(symbols: list[str], poll_seconds: int, signal_timeframe: str = "1m", once: bool = False) -> int:
     last_state: dict[str, str] = {}
 
     while True:
         print(f"\n[{datetime.now().isoformat()}] polling {', '.join(symbols)}")
         for symbol in symbols:
             try:
-                snap = fetch_symbol_snapshot(symbol)
+                snap = fetch_symbol_snapshot(symbol, price_interval=signal_timeframe)
                 if not snap:
                     print(f"  - {symbol}: no data")
                     continue
@@ -211,7 +213,8 @@ def run_loop(symbols: list[str], poll_seconds: int, once: bool = False) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Free near-real-time options flow polling monitor")
     parser.add_argument("--symbols", default="SPY,QQQ,IWM", help="Comma-separated symbols")
-    parser.add_argument("--poll-seconds", type=int, default=300, help="Polling interval in seconds (default 300)")
+    parser.add_argument("--poll-seconds", type=int, default=60, help="Polling interval in seconds (default 60 for 1min signals)")
+    parser.add_argument("--signal-timeframe", default="1m", help="Price timeframe for signal refresh (default: 1m)")
     parser.add_argument("--once", action="store_true", help="Run one cycle and exit")
     parser.add_argument("--self-check", action="store_true", help="Validate dependencies and fetch one snapshot per symbol")
     return parser.parse_args()
@@ -225,11 +228,11 @@ def main() -> int:
         return 1
 
     if args.self_check:
-        return run_self_check(symbols)
+        return run_self_check(symbols, args.signal_timeframe)
 
     print("Starting free MVP live monitor...")
     print("Output mode: terminal only (no webhooks/email).")
-    return run_loop(symbols=symbols, poll_seconds=args.poll_seconds, once=args.once)
+    return run_loop(symbols=symbols, poll_seconds=args.poll_seconds, signal_timeframe=args.signal_timeframe, once=args.once)
 
 
 if __name__ == "__main__":

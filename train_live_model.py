@@ -38,7 +38,7 @@ def _load_core_ml():
     return np, pd, RandomForestRegressor, r2_score, TimeSeriesSplit
 
 
-def fetch_symbol_frame(symbol: str, period: str = "2y"):
+def fetch_symbol_frame(symbol: str, period: str = "max"):
     _, pd, _, _, _ = _load_core_ml()
     yf = _load_yfinance()
     t = yf.Ticker(symbol)
@@ -80,9 +80,9 @@ def fetch_symbol_frame(symbol: str, period: str = "2y"):
     return df.reset_index(names="date")
 
 
-def prepare_dataset(symbols: list[str]):
+def prepare_dataset(symbols: list[str], period: str):
     np, pd, _, _, _ = _load_core_ml()
-    frames = [fetch_symbol_frame(s) for s in symbols]
+    frames = [fetch_symbol_frame(s, period=period) for s in symbols]
     df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
     df = df.dropna(subset=["target_1d"]).copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
@@ -134,10 +134,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default="SPY,QQQ,IWM")
     ap.add_argument("--out", default="artifacts/live_model.pkl")
+    ap.add_argument("--period", default="max", help="yfinance history period for training (default: max)")
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    df = prepare_dataset(symbols)
+    df = prepare_dataset(symbols, period=args.period)
     if df.empty:
         print("No training data.")
         return 1
@@ -148,6 +149,7 @@ def main() -> int:
         pickle.dump(bundle, f)
 
     print("Saved model:", args.out)
+    print("Training period:", args.period)
     print(json.dumps(bundle["metrics"], indent=2))
     return 0
 

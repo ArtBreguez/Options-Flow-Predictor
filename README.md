@@ -120,13 +120,13 @@ Este repositório inclui o script `live_options_polling.py` para rodar um monito
 
 - Yahoo/yfinance para preço + cadeia de opções
 - VIX e VIX9D para contexto de volatilidade
-- Recalcula sinais a cada 5 minutos (`--poll-seconds 300`)
+- Recalcula sinais a cada 1 minuto (`--poll-seconds 60`)
 - Apenas imprime sinais no terminal (sem webhook/email)
 
 ### Executar
 
 ```bash
-python live_options_polling.py --symbols SPY,QQQ,IWM --poll-seconds 300
+python live_options_polling.py --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 1m
 ```
 
 Rodar um único ciclo (teste):
@@ -154,16 +154,16 @@ Este script é **parcialmente fiel** ao notebook:
 
 Para sair do modo puramente rule-based e aproximar do notebook:
 
-1. Treine e salve um modelo com features históricas:
+1. Treine e salve um modelo com features históricas (agora com `--period max`):
 
 ```bash
-python train_live_model.py --symbols SPY,QQQ,IWM --out artifacts/live_model.pkl
+python train_live_model.py --symbols SPY,QQQ,IWM --period max --out artifacts/live_model.pkl
 ```
 
-2. Rode inferência live combinando ML + fluxo de opções:
+2. Rode inferência live combinando ML + fluxo de opções em timeframe de 1 minuto:
 
 ```bash
-python live_ml_signals.py --model artifacts/live_model.pkl --symbols SPY,QQQ,IWM --poll-seconds 300
+python live_ml_signals.py --model artifacts/live_model.pkl --symbols SPY,QQQ,IWM --poll-seconds 60 --signal-timeframe 1m
 ```
 
 Regra de ação no script live:

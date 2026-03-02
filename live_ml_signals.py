@@ -17,11 +17,12 @@ def _load_yfinance():
     return yf
 
 
-def build_live_row(symbol: str, snap):
+def build_live_row(symbol: str, snap, signal_timeframe: str = "1m"):
     import pandas as pd  # type: ignore
     yf = _load_yfinance()
     t = yf.Ticker(symbol)
-    px = t.history(period="30d")
+    period_for_interval = "7d" if signal_timeframe == "1m" else "1mo"
+    px = t.history(period=period_for_interval, interval=signal_timeframe)
     close = px["Close"]
 
     row = {
@@ -57,7 +58,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="artifacts/live_model.pkl")
     ap.add_argument("--symbols", default="SPY,QQQ,IWM")
-    ap.add_argument("--poll-seconds", type=int, default=300)
+    ap.add_argument("--poll-seconds", type=int, default=60)
+    ap.add_argument("--signal-timeframe", default="1m", help="Price timeframe for live features (default: 1m)")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--min-abs-pred", type=float, default=0.0003)
     args = ap.parse_args()
@@ -75,12 +77,12 @@ def main() -> int:
         print(f"\n[{datetime.now().isoformat()}] ml polling {', '.join(symbols)}")
         for s in symbols:
             try:
-                snap = fetch_symbol_snapshot(s)
+                snap = fetch_symbol_snapshot(s, price_interval=args.signal_timeframe)
                 if not snap:
                     print(f"- {s}: no snapshot")
                     continue
                 sig = snapshot_signature(snap)
-                x = build_live_row(s, snap)[feature_cols]
+                x = build_live_row(s, snap, signal_timeframe=args.signal_timeframe)[feature_cols]
                 ml_pred = float(rf.predict(x)[0])
                 action = decide(ml_pred, snap.pcr_signal, snap.unusual_volume, args.min_abs_pred)
 
