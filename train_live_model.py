@@ -129,6 +129,73 @@ def summarize_metrics(folds):
     return out
 
 
+
+
+def notebook_style_split(X, y):
+    """Replicate notebook split behavior: TimeSeriesSplit(n_splits=3), first split only."""
+    _, _, _, _, _, TimeSeriesSplit = _load_core_ml()
+    tscv = TimeSeriesSplit(n_splits=3)
+    tr, te = next(tscv.split(X))
+    return X.iloc[tr], X.iloc[te], y.iloc[tr], y.iloc[te]
+
+
+def compute_baselines(y_train, y_test):
+    import numpy as np  # type: ignore
+    from sklearn.metrics import mean_squared_error, r2_score  # type: ignore
+
+    # baseline 1: always zero return
+    pred_zero = np.zeros(len(y_test))
+
+    # baseline 2: train-mean return
+    mu = float(np.mean(y_train))
+    pred_mean = np.full(len(y_test), mu)
+
+    return {
+        "baseline_zero_r2": float(r2_score(y_test, pred_zero)),
+        "baseline_zero_rmse": float(np.sqrt(mean_squared_error(y_test, pred_zero))),
+        "baseline_mean_r2": float(r2_score(y_test, pred_mean)),
+        "baseline_mean_rmse": float(np.sqrt(mean_squared_error(y_test, pred_mean))),
+    }
+
+
+def notebook_baseline_eval(X, y, use_xgb: bool):
+    """Single-split evaluation to mirror notebook training logics."""
+    _, _, RandomForestRegressor, r2_score, mean_squared_error, _ = _load_core_ml()
+    xgb_mod = _maybe_xgb() if use_xgb else None
+
+    Xtr, Xte, ytr, yte = notebook_style_split(X, y)
+
+    rf = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
+    rf.fit(Xtr, ytr)
+    rf_pred = rf.predict(Xte)
+
+    out = {
+        "rf_r2": float(r2_score(yte, rf_pred)),
+        "rf_rmse": float(np.sqrt(mean_squared_error(yte, rf_pred))),
+    }
+
+    if xgb_mod is not None:
+        xgb = xgb_mod.XGBRegressor(
+            n_estimators=300,
+            learning_rate=0.05,
+            max_depth=4,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            random_state=42,
+        )
+        xgb.fit(Xtr, ytr, verbose=False)
+        xgb_pred = xgb.predict(Xte)
+        ens = (rf_pred + xgb_pred) / 2
+        out.update({
+            "xgb_r2": float(r2_score(yte, xgb_pred)),
+            "xgb_rmse": float(np.sqrt(mean_squared_error(yte, xgb_pred))),
+            "ensemble_r2": float(r2_score(yte, ens)),
+            "ensemble_rmse": float(np.sqrt(mean_squared_error(yte, ens))),
+        })
+
+    out.update(compute_baselines(ytr, yte))
+    return out
+
 def fit_final_models(X, y, use_xgb: bool):
     _, pd, RandomForestRegressor, _, _, _ = _load_core_ml()
     xgb_mod = _maybe_xgb() if use_xgb else None
@@ -153,17 +220,27 @@ def fit_final_models(X, y, use_xgb: bool):
     return models, fi.head(20).to_dict()
 
 
-def train(df, n_splits: int, use_xgb: bool):
+def train(df, n_splits: int, use_xgb: bool, notebook_mode: bool):
     X = df[FEATURE_COLS]
     y = df["target_1d"]
+
+    baseline_eval = notebook_baseline_eval(X, y, use_xgb=use_xgb)
+
     folds = evaluate_walk_forward(X, y, n_splits=n_splits, use_xgb=use_xgb)
     summary = summarize_metrics(folds)
     models, fi = fit_final_models(X, y, use_xgb=use_xgb)
+
+    if notebook_mode:
+        metrics_summary = baseline_eval
+    else:
+        metrics_summary = {**baseline_eval, **summary}
+
     return {
         "models": models,
         "feature_cols": FEATURE_COLS,
         "fold_metrics": folds,
-        "metrics_summary": summary,
+        "notebook_baseline_metrics": baseline_eval,
+        "metrics_summary": metrics_summary,
         "feature_importance_top20": fi,
         "n_rows": int(len(df)),
     }
@@ -176,6 +253,7 @@ def main() -> int:
     ap.add_argument("--period", default="max")
     ap.add_argument("--cv-splits", type=int, default=5)
     ap.add_argument("--disable-xgb", action="store_true")
+    ap.add_argument("--notebook-mode", action="store_true", help="Report primary metrics using notebook-style first split")
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -184,7 +262,7 @@ def main() -> int:
         print("No training data.")
         return 1
 
-    bundle = train(df, n_splits=args.cv_splits, use_xgb=not args.disable_xgb)
+    bundle = train(df, n_splits=args.cv_splits, use_xgb=not args.disable_xgb, notebook_mode=args.notebook_mode)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "wb") as f:
         pickle.dump(bundle, f)
@@ -193,6 +271,9 @@ def main() -> int:
     print("Training period:", args.period)
     print("Rows:", bundle["n_rows"])
     print(json.dumps(bundle["metrics_summary"], indent=2))
+    if not args.notebook_mode:
+        print("Notebook-style baseline metrics:")
+        print(json.dumps(bundle["notebook_baseline_metrics"], indent=2))
     return 0
 
 
