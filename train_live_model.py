@@ -123,7 +123,7 @@ def evaluate_walk_forward(X, y, n_splits: int, use_xgb: bool, n_estimators: int,
             xgb = xgb_mod.XGBRegressor(
                 n_estimators=n_estimators,
                 learning_rate=0.05,
-                max_depth=4,
+                max_depth=max_depth or 4,
                 subsample=0.9,
                 colsample_bytree=0.9,
                 random_state=42,
@@ -155,6 +155,18 @@ def summarize_metrics(folds):
     return out
 
 
+
+
+def select_primary_r2(metrics: dict) -> float:
+    """Pick the strongest available model metric for comparisons."""
+    for key in ("ensemble_r2", "xgb_r2", "rf_r2"):
+        if key in metrics:
+            return float(metrics[key])
+    return float("-inf")
+
+
+def edge_vs_baseline(metrics: dict) -> float:
+    return select_primary_r2(metrics) - float(metrics.get("baseline_mean_r2", -1e9))
 def notebook_style_split(X, y):
     _, _, _, _, _, TimeSeriesSplit = _load_core_ml()
     tr, te = next(TimeSeriesSplit(n_splits=3).split(X))
@@ -196,7 +208,7 @@ def notebook_baseline_eval(X, y, use_xgb: bool, n_estimators: int, max_depth: in
         xgb = xgb_mod.XGBRegressor(
             n_estimators=n_estimators,
             learning_rate=0.05,
-            max_depth=4,
+            max_depth=max_depth or 4,
             subsample=0.9,
             colsample_bytree=0.9,
             random_state=42,
@@ -229,7 +241,7 @@ def fit_final_models(X, y, use_xgb: bool, n_estimators: int, max_depth: int | No
         xgb = xgb_mod.XGBRegressor(
             n_estimators=n_estimators,
             learning_rate=0.05,
-            max_depth=4,
+            max_depth=max_depth or 4,
             subsample=0.9,
             colsample_bytree=0.9,
             random_state=42,
@@ -271,9 +283,9 @@ def evaluate_config(symbols, period, timeframe, target_bars, cv_splits, use_xgb,
         return None
     bundle = train(df, n_splits=cv_splits, use_xgb=use_xgb, notebook_mode=notebook_mode, n_estimators=n_estimators, max_depth=max_depth, save_models=False)
     metrics = bundle["notebook_baseline_metrics"] if notebook_mode else bundle["metrics_summary"]
-    score = metrics.get("rf_r2", metrics.get("rf_r2_mean", -1e9))
-    baseline = metrics.get("baseline_mean_r2", -1e9)
-    edge = score - baseline
+    score = select_primary_r2(metrics)
+    baseline = float(metrics.get("baseline_mean_r2", -1e9))
+    edge = edge_vs_baseline(metrics)
     return {
         "timeframe": timeframe,
         "target_bars": target_bars,
@@ -318,6 +330,7 @@ def main() -> int:
     ap.add_argument("--search", action="store_true", help="Search best timeframe/target-bars combo against baseline")
     ap.add_argument("--search-timeframes", default="1m,2m,5m,15m", help="Comma list for --search")
     ap.add_argument("--search-target-bars", default="1,2,3", help="Comma list for --search")
+    ap.add_argument("--auto-search-if-underperform", action="store_true", help="If initial config underperforms baseline, run config search and keep best")
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -358,6 +371,34 @@ def main() -> int:
         bundle["train_timeframe"] = args.train_timeframe
         bundle["target_bars"] = args.target_bars
 
+        metrics_now = bundle.get("metrics_summary", {})
+        edge_now = edge_vs_baseline(metrics_now)
+        if args.auto_search_if_underperform and edge_now <= 0:
+            print(f"Initial config underperforms baseline (edge={edge_now:.6f}); running search...")
+            tfs = [x.strip() for x in args.search_timeframes.split(",") if x.strip()]
+            bars_list = [int(x.strip()) for x in args.search_target_bars.split(",") if x.strip()]
+            best, all_candidates = search_best_config(
+                symbols=symbols,
+                period=args.period,
+                timeframes=tfs,
+                target_bars_list=bars_list,
+                cv_splits=args.cv_splits,
+                use_xgb=not args.disable_xgb,
+                notebook_mode=args.notebook_mode,
+                n_estimators=args.n_estimators,
+                max_depth=args.max_depth,
+            )
+            if best is not None and best["edge"] > edge_now:
+                print(f"Switching to searched config timeframe={best['timeframe']} target_bars={best['target_bars']} edge={best['edge']:.6f}")
+                df_best = prepare_dataset(symbols, period=args.period, train_timeframe=best["timeframe"], target_bars=best["target_bars"])
+                bundle = train(df_best, n_splits=args.cv_splits, use_xgb=not args.disable_xgb, notebook_mode=args.notebook_mode, n_estimators=args.n_estimators, max_depth=args.max_depth, save_models=True)
+                bundle["search_results"] = [
+                    {"timeframe": c["timeframe"], "target_bars": c["target_bars"], "score": c["score"], "baseline": c["baseline"], "edge": c["edge"]}
+                    for c in all_candidates
+                ]
+                bundle["train_timeframe"] = best["timeframe"]
+                bundle["target_bars"] = best["target_bars"]
+
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     if args.out.endswith(".gz"):
         with gzip.open(args.out, "wb") as f:
@@ -373,8 +414,8 @@ def main() -> int:
     print("Rows:", bundle["n_rows"])
     print(json.dumps(bundle["metrics_summary"], indent=2))
     m = bundle.get("metrics_summary", {})
-    if "rf_r2" in m and "baseline_mean_r2" in m:
-        edge = float(m["rf_r2"]) - float(m["baseline_mean_r2"])
+    if "baseline_mean_r2" in m:
+        edge = edge_vs_baseline(m)
         print(f"Edge vs baseline_mean_r2: {edge:.6f}")
         if edge <= 0:
             print("[warning] Model is not beating baseline_mean in this config.")
